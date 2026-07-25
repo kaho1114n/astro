@@ -1,5 +1,29 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer } from "recharts";
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アストロラーベ | ネイタルチャート計算機</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { margin: 0; background: #14142B; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React / ReactDOM (UMD build) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<!-- Babel standalone: ブラウザ上でJSXを変換するために使用 -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
 
 /* ============================================================
    Astronomy module
@@ -909,7 +933,34 @@ function ChartWheel({ result }) {
    Main app
    ============================================================ */
 
-export default function App() {
+// 永続化ヘルパー: Claudeのアーティファクト環境ではwindow.storageを、
+// それ以外の通常ブラウザ(このHTMLを直接開いた場合など)ではlocalStorageを使う。
+// どちらも使えない/失敗する場合は静かに諦める(保存できないだけで、アプリ自体は動く)。
+const persist = {
+  async get(key) {
+    if (typeof window !== "undefined" && window.storage) {
+      try {
+        const r = await window.storage.get(key, false);
+        return r ? r.value : null;
+      } catch (e) { return null; }
+    }
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  },
+  async set(key, value) {
+    if (typeof window !== "undefined" && window.storage) {
+      try { await window.storage.set(key, value, false); return; } catch (e) { /* fallthrough */ }
+    }
+    try { window.localStorage.setItem(key, value); } catch (e) { /* 保存できなくても致命的ではない */ }
+  },
+  async delete(key) {
+    if (typeof window !== "undefined" && window.storage) {
+      try { await window.storage.delete(key, false); return; } catch (e) { /* fallthrough */ }
+    }
+    try { window.localStorage.removeItem(key); } catch (e) { /* 保存できなくても致命的ではない */ }
+  },
+};
+
+function App() {
   useEffect(() => {
     const link = document.createElement("link");
     link.href = "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap";
@@ -937,6 +988,7 @@ export default function App() {
     place: "東京",
     houseSystem: "placidus",
   });
+  const [people, setPeople] = useState([]); // 登録済みの人一覧 [{id, name, date, time, tz, lat, lon, place, houseSystem}]
   const [natal, setNatal] = useState(null);
   const [natalB, setNatalB] = useState(null);
   const [synastry, setSynastry] = useState(null);
@@ -963,14 +1015,44 @@ export default function App() {
   };
 
   const saveInputs = async (f, fB, showB) => {
-    if (!window.storage) return;
-    try {
-      await window.storage.set("natal-chart:formA", JSON.stringify(f), false);
-      await window.storage.set("natal-chart:formB", JSON.stringify(fB), false);
-      await window.storage.set("natal-chart:showPersonB", JSON.stringify(showB), false);
-    } catch (e) {
-      // 保存できなくても致命的ではないため、静かに無視する
-    }
+    await persist.set("natal-chart:formA", JSON.stringify(f));
+    await persist.set("natal-chart:formB", JSON.stringify(fB));
+    await persist.set("natal-chart:showPersonB", JSON.stringify(showB));
+  };
+
+  const persistPeople = async (list) => {
+    await persist.set("natal-chart:people", JSON.stringify(list));
+  };
+
+  // 現在のフォーム内容を名前付きで登録する
+  const registerPerson = (name, formData) => {
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      name,
+      date: formData.date, time: formData.time, tz: formData.tz,
+      lat: formData.lat, lon: formData.lon, place: formData.place,
+      houseSystem: formData.houseSystem,
+    };
+    const next = [...people, entry];
+    setPeople(next);
+    persistPeople(next);
+  };
+
+  const deletePerson = (id) => {
+    const next = people.filter((p) => p.id !== id);
+    setPeople(next);
+    persistPeople(next);
+  };
+
+  // 登録済みの人のデータを、指定したフォーム(あなた/お相手)へ反映する
+  const applyPersonTo = (id, setter) => {
+    const p = people.find((x) => x.id === id);
+    if (!p) return;
+    setter({
+      date: p.date, time: p.time, tz: p.tz,
+      lat: p.lat, lon: p.lon, place: p.place,
+      houseSystem: p.houseSystem || "placidus",
+    });
   };
 
   // f/fB/showB を明示的に受け取ることで、起動時の読み込み直後にも
@@ -1020,20 +1102,22 @@ export default function App() {
       let loadedForm = form;
       let loadedFormB = formB;
       let loadedShowB = showPersonB;
-      if (window.storage) {
-        try {
-          const a = await window.storage.get("natal-chart:formA", false);
-          if (a && a.value) loadedForm = JSON.parse(a.value);
-        } catch (e) { /* 保存データなし、またはstorage利用不可 */ }
-        try {
-          const b = await window.storage.get("natal-chart:formB", false);
-          if (b && b.value) loadedFormB = JSON.parse(b.value);
-        } catch (e) { /* 保存データなし */ }
-        try {
-          const s = await window.storage.get("natal-chart:showPersonB", false);
-          if (s && s.value) loadedShowB = JSON.parse(s.value);
-        } catch (e) { /* 保存データなし */ }
-      }
+      try {
+        const a = await persist.get("natal-chart:formA");
+        if (a) loadedForm = JSON.parse(a);
+      } catch (e) { /* 保存データなし */ }
+      try {
+        const b = await persist.get("natal-chart:formB");
+        if (b) loadedFormB = JSON.parse(b);
+      } catch (e) { /* 保存データなし */ }
+      try {
+        const s = await persist.get("natal-chart:showPersonB");
+        if (s) loadedShowB = JSON.parse(s);
+      } catch (e) { /* 保存データなし */ }
+      try {
+        const p = await persist.get("natal-chart:people");
+        if (p) setPeople(JSON.parse(p));
+      } catch (e) { /* 保存データなし */ }
       if (cancelled) return;
       setForm(loadedForm);
       setFormB(loadedFormB);
@@ -1116,6 +1200,13 @@ export default function App() {
         <div className="grid md:grid-cols-[320px_1fr] gap-8">
           <div>
             <div className="space-y-4 p-5 rounded" style={{ background: "#1B1B3A", border: "1px solid #2c2c52" }}>
+              <PersonPicker
+                people={people}
+                label="登録済みの人から選ぶ(あなた)"
+                onLoad={(id) => applyPersonTo(id, setForm)}
+                onSave={(name) => registerPerson(name, form)}
+                onDelete={deletePerson}
+              />
               <Field label="生年月日">
                 <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={inputStyle} />
               </Field>
@@ -1154,6 +1245,13 @@ export default function App() {
               {showPersonB && (
                 <div className="space-y-4 p-4 rounded" style={{ background: "#14142B", border: "1px dashed #3a3a5e" }}>
                   <p style={{ color: "#D9B44A", fontSize: "12px", fontWeight: 600 }}>お相手の情報</p>
+                  <PersonPicker
+                    people={people}
+                    label="登録済みの人から選ぶ(お相手)"
+                    onLoad={(id) => applyPersonTo(id, setFormB)}
+                    onSave={(name) => registerPerson(name, formB)}
+                    onDelete={deletePerson}
+                  />
                   <Field label="生年月日">
                     <input type="date" value={formB.date} onChange={(e) => setFormB({ ...formB, date: e.target.value })} style={inputStyle} />
                   </Field>
@@ -1180,13 +1278,9 @@ export default function App() {
               <button onClick={handleCalc} style={buttonStyle}>チャートと運勢を計算する</button>
               <button
                 onClick={async () => {
-                  if (window.storage) {
-                    try {
-                      await window.storage.delete("natal-chart:formA", false);
-                      await window.storage.delete("natal-chart:formB", false);
-                      await window.storage.delete("natal-chart:showPersonB", false);
-                    } catch (e) { /* 既に無い場合などは無視 */ }
-                  }
+                  await persist.delete("natal-chart:formA");
+                  await persist.delete("natal-chart:formB");
+                  await persist.delete("natal-chart:showPersonB");
                   setForm({ date: "1994-06-21", time: "12:00", tz: 9, lat: 35.6812, lon: 139.7671, place: "東京", houseSystem: "placidus" });
                   setFormB({ date: "1994-06-21", time: "12:00", tz: 9, lat: 35.6812, lon: 139.7671, place: "東京", houseSystem: "placidus" });
                   setShowPersonB(false);
@@ -1196,7 +1290,7 @@ export default function App() {
                 保存した入力をクリア
               </button>
               <p style={{ color: "#6f6c8f", fontSize: "11px", lineHeight: 1.5 }}>
-                入力内容はこの端末のブラウザに自動で保存され、次回開いたときも引き継がれます(このアプリを使う人だけが見られる情報で、他の人には共有されません)。
+                入力内容はこの端末のブラウザに自動で保存され、次回開いたときも引き継がれます。登録した人の一覧も同様に保存されます(このアプリを使う人だけが見られる情報で、他の人には共有されません)。
               </p>
               {error && <p style={{ color: "#C9645C", fontSize: "12px" }}>{error}</p>}
               {natal && natal.usedSystem === "equal_fallback" && (
@@ -1604,6 +1698,67 @@ function Field({ label, children }) {
   );
 }
 
+// 登録済みの人から選んでフォームに反映する/現在の内容を新規登録する/削除する、ためのUI部品
+function PersonPicker({ people, label, onLoad, onSave, onDelete }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="p-3 rounded" style={{ background: "#14142B", border: "1px dashed #3a3a5e" }}>
+      <p style={{ color: "#9C8FC9", fontSize: "11px", marginBottom: "6px", letterSpacing: "0.05em" }}>{label}</p>
+
+      {people.length > 0 && (
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            if (e.target.value) { onLoad(e.target.value); e.target.value = ""; }
+          }}
+          style={{ ...inputStyle, marginBottom: "8px" }}
+        >
+          <option value="">登録済みから選んで反映...</option>
+          {people.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}({p.place || "場所未設定"})</option>
+          ))}
+        </select>
+      )}
+
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder="名前を付けて登録(例: 母、友人A)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <button
+          onClick={() => { if (name.trim()) { onSave(name.trim()); setName(""); } }}
+          style={{ padding: "0 12px", background: "#C9A227", color: "#14142B", borderRadius: "4px", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+        >
+          今の内容を登録
+        </button>
+      </div>
+
+      {people.length > 0 && (
+        <div className="flex flex-wrap gap-2" style={{ marginTop: "8px" }}>
+          {people.map((p) => (
+            <span
+              key={p.id}
+              style={{ fontSize: "11px", color: "#8A87A8", background: "#1B1B3A", padding: "3px 6px 3px 10px", borderRadius: "999px", display: "inline-flex", alignItems: "center", gap: "6px", border: "1px solid #2c2c52" }}
+            >
+              {p.name}
+              <button
+                onClick={() => onDelete(p.id)}
+                title="削除"
+                style={{ color: "#C9645C", cursor: "pointer", background: "none", border: "none", padding: "0 4px", fontSize: "13px", lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SummaryCard({ label, value }) {
   return (
     <div className="rounded p-4" style={{ background: "#1B1B3A", border: "1px solid #2c2c52" }}>
@@ -1696,36 +1851,77 @@ function TimelineChart({ events, daysBefore, daysAfter, baseDate }) {
 // (個別運勢は1本、相性は本人・お相手の2本、を想定)
 function ScoreLineChart({ lines, height = 190 }) {
   const base = lines[0].series;
+  const n = base.length;
   const data = base.map((pt, idx) => {
-    const row = { label: fmtMD(pt.date), offsetZero: pt.offset === 0 };
+    const row = { offset: pt.offset, label: fmtMD(pt.date) };
     lines.forEach((l) => { row[l.key] = Number(l.series[idx].score.toFixed(2)); });
     return row;
   });
-  const todayLabel = data.find((d) => d.offsetZero)?.label;
-  const tickStep = Math.max(1, Math.round(data.length / 9));
+  const todayIdx = data.findIndex((d) => d.offset === 0);
+
+  const allScores = lines.flatMap((l) => l.series.map((s) => s.score));
+  let min = Math.min(0, ...allScores);
+  let max = Math.max(0, ...allScores);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.12;
+  min -= pad;
+  max += pad;
+
+  const W = 600;
+  const marginLeft = 30, marginRight = 10, marginTop = 14, marginBottom = 20;
+  const plotW = W - marginLeft - marginRight;
+  const plotH = height - marginTop - marginBottom;
+
+  const xAt = (i) => marginLeft + (n <= 1 ? 0 : (i / (n - 1)) * plotW);
+  const yAt = (v) => marginTop + (1 - (v - min) / (max - min)) * plotH;
+
+  const tickCount = Math.min(6, n);
+  const tickIdxs = [...new Set(Array.from({ length: tickCount }, (_, k) => Math.round((k / (tickCount - 1 || 1)) * (n - 1))))];
+  const yTicks = [min + pad, (min + max) / 2, max - pad];
 
   return (
-    <div style={{ width: "100%", height: height + "px" }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}>
-          <CartesianGrid stroke="#2c2c52" strokeDasharray="3 3" vertical={false} />
-          <XAxis
-            dataKey="label"
-            tick={{ fontSize: 10, fill: "#8A87A8" }}
-            axisLine={{ stroke: "#2c2c52" }}
-            tickLine={false}
-            interval={tickStep - 1}
-          />
-          <YAxis tick={{ fontSize: 10, fill: "#8A87A8" }} axisLine={{ stroke: "#2c2c52" }} tickLine={false} width={28} />
-          <ReferenceLine y={0} stroke="#4a4a72" />
-          {todayLabel && <ReferenceLine x={todayLabel} stroke="#C9A227" strokeDasharray="4 2" label={{ value: "今日", position: "top", fill: "#C9A227", fontSize: 10 }} />}
-          <Tooltip contentStyle={{ background: "#1B1B3A", border: "1px solid #2c2c52", fontSize: "11px", borderRadius: "4px" }} labelStyle={{ color: "#EDE7DA" }} />
-          {lines.length > 1 && <Legend wrapperStyle={{ fontSize: "11px", color: "#8A87A8" }} />}
+    <div>
+      <svg viewBox={"0 0 " + W + " " + height} style={{ width: "100%", height: height + "px" }}>
+        {yTicks.map((v, idx) => (
+          <React.Fragment key={idx}>
+            <line x1={marginLeft} y1={yAt(v)} x2={W - marginRight} y2={yAt(v)} stroke="#2c2c52" strokeDasharray="3 3" />
+            <text x={marginLeft - 5} y={yAt(v)} fill="#8A87A8" fontSize="9" textAnchor="end" dominantBaseline="middle">{v.toFixed(0)}</text>
+          </React.Fragment>
+        ))}
+        <line x1={marginLeft} y1={yAt(0)} x2={W - marginRight} y2={yAt(0)} stroke="#4a4a72" strokeWidth="1" />
+        {todayIdx >= 0 && (
+          <>
+            <line x1={xAt(todayIdx)} y1={marginTop} x2={xAt(todayIdx)} y2={marginTop + plotH} stroke="#C9A227" strokeDasharray="4 2" />
+            <text x={xAt(todayIdx)} y={marginTop - 3} fill="#C9A227" fontSize="9" textAnchor="middle">今日</text>
+          </>
+        )}
+        {tickIdxs.map((i) => (
+          <text key={i} x={xAt(i)} y={height - 4} fill="#8A87A8" fontSize="9" textAnchor="middle">{data[i].label}</text>
+        ))}
+        {lines.map((l) => {
+          const points = data.map((d, i) => xAt(i) + "," + yAt(d[l.key])).join(" ");
+          return <polyline key={l.key} points={points} fill="none" stroke={l.color} strokeWidth="2" />;
+        })}
+        {lines.map((l) => (
+          <React.Fragment key={l.key + "-pts"}>
+            {data.map((d, i) => (
+              <circle key={i} cx={xAt(i)} cy={yAt(d[l.key])} r="6" fill="transparent">
+                <title>{d.label + " " + l.label + ": " + d[l.key]}</title>
+              </circle>
+            ))}
+          </React.Fragment>
+        ))}
+      </svg>
+      {lines.length > 1 && (
+        <div className="flex gap-4 justify-center flex-wrap" style={{ fontSize: "11px", color: "#8A87A8", marginTop: "2px" }}>
           {lines.map((l) => (
-            <Line key={l.key} type="monotone" dataKey={l.key} name={l.label} stroke={l.color} dot={false} strokeWidth={2} />
+            <span key={l.key} style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: l.color, display: "inline-block" }} />
+              {l.label}
+            </span>
           ))}
-        </LineChart>
-      </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
@@ -1755,3 +1951,10 @@ const buttonStyle = {
 
 const thStyle = { textAlign: "left", padding: "8px 12px", fontSize: "11px", letterSpacing: "0.05em", fontWeight: 500 };
 const tdStyle = { padding: "8px 12px", borderTop: "1px solid #2c2c52" };
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
